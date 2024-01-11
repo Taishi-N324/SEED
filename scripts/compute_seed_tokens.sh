@@ -34,6 +34,8 @@ BATCH_SIZE=2048
 echo BATCH_SIZE=$BATCH_SIZE
 
 # Args
+module load Stages/2023 GCC/11.3.0  OpenMPI/4.1.4
+ml git
 
 source /p/project/ccstdl/gupta6/miniconda3/bin/activate
 conda activate seed
