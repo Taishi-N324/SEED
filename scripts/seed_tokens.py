@@ -22,21 +22,38 @@ from timeit import default_timer as timer
 warnings.filterwarnings("ignore", category=UserWarning)
 pyrootutils.setup_root(__file__, indicator='.project-root', pythonpath=True)
 
-ALLOWED_DATASETS = ["laion", "mmc4"]
+ALLOWED_DATASETS = ["laion", "mmc4", "datacomp"]
 
 EXPECTED_CHUNK_SIZE = 10000
 
+from torchvision import transforms
+
+def transform_and_remove_keys(sample):
+    image, metadata, key= sample
+
+    # CLIP transform without resizing
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    
+    new_dictionary = {}
+    new_dictionary['key'] = metadata['key']
+    new_dictionary['caption'] = metadata['caption']
+    new_dictionary['uid'] = metadata['uid']
+    return image, new_dictionary, key
 
 def remove_keys(sample):
-    image, metadata = sample
+    image, metadata, key = sample
     new_metadata = {}
+
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
 
     keys_to_keep = ['caption', 'similarity']
 
     for k, v in metadata.items():
         if k in keys_to_keep:
             new_metadata[k] = v
-    return image, new_metadata
+    return image, new_metadata, key
 
 def get_dataset(dataset_type, path, s3):
     if s3:
@@ -49,6 +66,15 @@ def get_dataset(dataset_type, path, s3):
             .to_tuple("jpg", "json")
         )
         dataset = dataset.map(remove_keys)
+
+        return dataset
+    elif dataset_type == "datacomp":
+        dataset = (
+            wds.WebDataset(path)
+            .decode(wds.imagehandler("torchrgb"))
+            .to_tuple("jpg;png;webp", "json", "__key__")
+        )
+        dataset = dataset.map(transform_and_remove_keys)
 
         return dataset
     elif dataset_type == "mmc4":
@@ -86,9 +112,6 @@ def process_chunk(
     tokenizer_cfg = OmegaConf.load(tokenizer_cfg_path)
     tokenizer = hydra.utils.instantiate(tokenizer_cfg, device=rank, load_diffusion=False)
 
-    transform_cfg = OmegaConf.load(transform_cfg_path)
-    transform = hydra.utils.instantiate(transform_cfg)
-
     num_paths_per_chunk = int(np.ceil(len(paths) / world_size))
 
     worker_paths = paths[
@@ -111,14 +134,14 @@ def process_chunk(
             )
             rows = {}
             embeddings = []
-            for data, metas in tqdm(
+            for data, metas, key_ in tqdm(
                 dataloader,
                 total=int(np.ceil(EXPECTED_CHUNK_SIZE / batch_size)),
                 desc=f"Rank : {rank}, Shard: {basename}",
                 position=rank,
                 leave=False,
             ):
-                image_tensor = transform(data).to(rank)
+                image_tensor = data.to(rank)
                 image_ids = tokenizer.encode_image(image_torch=image_tensor)
 
                 if len(rows.keys()) == 0:
@@ -126,11 +149,13 @@ def process_chunk(
                         if type(v) == torch.Tensor:
                             v = v.cpu().numpy().tolist()
                         rows[k] = v
+                    rows["__key__"] = key_
                 else:
                     for k, v in metas.items():
                         if type(v) == torch.Tensor:
                             v = v.cpu().numpy().tolist()
                         rows[k].extend(v)
+                    rows["__key__"] = key_
                 embeddings.append(image_ids)
             embeddings = torch.cat(embeddings, axis=0)
 
@@ -186,7 +211,7 @@ def main():
         "-ds",
         "--dataset",
         type=str,
-        default="laion",
+        default="datacomp",
         help="Type of dataset used. Can be 'laion' or 'mmc4'",
     )
     args = parser.parse_args()
