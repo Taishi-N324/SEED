@@ -23,8 +23,11 @@ warnings.filterwarnings("ignore", category=UserWarning)
 pyrootutils.setup_root(__file__, indicator='.project-root', pythonpath=True)
 
 ALLOWED_DATASETS = ["laion", "mmc4", "datacomp"]
-
+    
 EXPECTED_CHUNK_SIZE = 10000
+
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from torchvision import transforms
 
@@ -112,11 +115,12 @@ def process_chunk(
     tokenizer_cfg = OmegaConf.load(tokenizer_cfg_path)
     tokenizer = hydra.utils.instantiate(tokenizer_cfg, device=rank, load_diffusion=False)
 
-    num_paths_per_chunk = int(np.ceil(len(paths) / world_size))
-
-    worker_paths = paths[
-        rank * num_paths_per_chunk : min(len(paths), (rank + 1) * num_paths_per_chunk)
-    ]
+    # num_paths_per_chunk = int(np.ceil(len(paths) / world_size))
+    # python seed_tokens.py -p "/p/fastdata/mmlaion/datacomp/datacomp_1B/flat/{0000000..0000007}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_seed -nw 32 -ng 4 -bs 2048
+    # worker_paths = paths[
+    #     rank * num_paths_per_chunk : min(len(paths), (rank + 1) * num_paths_per_chunk)
+    # ]
+    worker_paths = paths[rank::world_size]
     print (f"Rank: {rank} processing {len(worker_paths)} shards")
     for path in worker_paths:
         basename = os.path.basename(path)
@@ -155,13 +159,13 @@ def process_chunk(
                         if type(v) == torch.Tensor:
                             v = v.cpu().numpy().tolist()
                         rows[k].extend(v)
-                    rows["__key__"] = key_
+                    rows["__key__"].extend(key_)
                 embeddings.append(image_ids)
             embeddings = torch.cat(embeddings, axis=0)
 
             df = pd.DataFrame(rows)
             embeddings_cpu = embeddings.cpu().numpy().reshape(len(df), -1)
-            df["code"] = [item.tobytes() for item in embeddings_cpu]
+            df["seed_tokens"] = [item.tobytes() for item in embeddings_cpu]
             df.to_parquet(output_path, compression="brotli")
         except Exception:
             print(f"[-] Failed to process {basename}:", file=sys.stderr)
