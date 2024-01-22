@@ -30,9 +30,12 @@ from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 from torchvision import transforms
+from multiprocessing import Process, Queue, Manager
+from queue import Empty
+
 
 def transform_and_remove_keys(sample):
-    image, metadata, key= sample
+    image, metadata, key, url = sample
 
     # CLIP transform without resizing
     image = transforms.functional.resize(image, (224, 224))
@@ -42,6 +45,7 @@ def transform_and_remove_keys(sample):
     new_dictionary['key'] = metadata['key']
     new_dictionary['caption'] = metadata['caption']
     new_dictionary['uid'] = metadata['uid']
+    new_dictionary['path'] = url
     return image, new_dictionary, key
 
 def remove_keys(sample):
@@ -75,7 +79,7 @@ def get_dataset(dataset_type, path, s3):
         dataset = (
             wds.WebDataset(path)
             .decode(wds.imagehandler("torchrgb"))
-            .to_tuple("jpg;png;webp", "json", "__key__")
+            .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
         )
         dataset = dataset.map(transform_and_remove_keys)
 
@@ -100,6 +104,44 @@ def get_dataset(dataset_type, path, s3):
         return dataset
 
 
+def writer_worker(q, output_dir):
+    
+    while True:
+        try:
+            sample = q.get(timeout=100) 
+
+            if sample is None:  # None is the signal to stop.
+                break
+            rows, embeddings = sample
+            df = pd.DataFrame(rows)
+            embeddings_cpu = embeddings.reshape(len(df), -1)
+            df["seed_tokens"] = [item.tobytes() for item in embeddings_cpu]
+            
+            grouped = df.groupby("path")
+            for path, group in grouped:
+                basename = os.path.basename(path)
+                output_path = os.path.join(
+                    output_dir, os.path.splitext(basename)[0] + ".parquet"
+                )
+                # Remove the path column as it's no longer needed
+                group = group.drop(columns=["path"])
+                # df.drop(columns=["embeddings"], inplace=True)
+                # df["seed_tokens"] = df["embeddings"].apply(lambda x: x.tobytes())
+                
+                # Check if parquet file exists and append or write accordingly
+                if os.path.exists(output_path):
+                    # Read existing parquet file into a dataframe to append new data
+                    existing_df = pd.read_parquet(output_path)
+                    updated_df = pd.concat([existing_df, group])
+                    # Write/overwrite the parquet file with the updated dataframe
+                    updated_df.to_parquet(output_path, index=False)
+                else:
+                    # Write the new dataframe to a parquet file directly
+                    group.to_parquet(output_path, index=False)
+
+        except Empty:
+            continue
+
 def process_chunk(
     rank,
     world_size,
@@ -111,6 +153,7 @@ def process_chunk(
     batch_size,
     s3,
     dataset_type,
+    q,
 ):
     tokenizer_cfg = OmegaConf.load(tokenizer_cfg_path)
     tokenizer = hydra.utils.instantiate(tokenizer_cfg, device=rank, load_diffusion=False)
@@ -122,55 +165,43 @@ def process_chunk(
     # ]
     worker_paths = paths[rank::world_size]
     print (f"Rank: {rank} processing {len(worker_paths)} shards")
-    for path in worker_paths:
-        basename = os.path.basename(path)
-        output_path = os.path.join(
-            output_dir, os.path.splitext(basename)[0] + ".parquet"
-        )
 
-        try:
-            dataset = get_dataset(dataset_type, path, s3)
-            dataloader = torch.utils.data.DataLoader(
-                dataset, #.batched(batch_size),
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=num_workers,
-            )
-            rows = {}
-            embeddings = []
-            for data, metas, key_ in tqdm(
+    dataset = get_dataset(dataset_type, paths, s3)
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset, #.batched(batch_size),
+        batch_size=batch_size,
+        pin_memory=True,
+        num_workers=num_workers,
+    )
+
+    rows = {}
+    writer_p = Process(target=writer_worker, args=(q, output_dir))
+    writer_p.start()
+
+    num_chunks = len(worker_paths)
+
+
+    for data, metas, key_ in tqdm(
                 dataloader,
-                total=int(np.ceil(EXPECTED_CHUNK_SIZE / batch_size)),
-                desc=f"Rank : {rank}, Shard: {basename}",
+                total=int(np.ceil(EXPECTED_CHUNK_SIZE * num_chunks / batch_size)),
+                desc=f"Rank : {rank}",
                 position=rank,
                 leave=False,
             ):
-                image_tensor = data.to(rank)
-                image_ids = tokenizer.encode_image(image_torch=image_tensor)
+        image_tensor = data.to(rank)
+        image_ids = tokenizer.encode_image(image_torch=image_tensor).cpu().numpy()
 
-                if len(rows.keys()) == 0:
-                    for k, v in metas.items():
-                        if type(v) == torch.Tensor:
-                            v = v.cpu().numpy().tolist()
-                        rows[k] = v
-                    rows["__key__"] = key_
-                else:
-                    for k, v in metas.items():
-                        if type(v) == torch.Tensor:
-                            v = v.cpu().numpy().tolist()
-                        rows[k].extend(v)
-                    rows["__key__"].extend(key_)
-                embeddings.append(image_ids)
-            embeddings = torch.cat(embeddings, axis=0)
+        for k, v in metas.items():
+            if type(v) == torch.Tensor:
+                v = v.cpu().numpy().tolist()
+            rows[k] = v
+        rows["__key__"] = key_
+        q.put((rows, image_ids))
+        rows = {}
 
-            df = pd.DataFrame(rows)
-            embeddings_cpu = embeddings.cpu().numpy().reshape(len(df), -1)
-            df["seed_tokens"] = [item.tobytes() for item in embeddings_cpu]
-            df.to_parquet(output_path, compression="brotli")
-        except Exception:
-            print(f"[-] Failed to process {basename}:", file=sys.stderr)
-            traceback.print_exc()
-
+    q.put(None)  # signal for the writer worker to stop
+    writer_p.join()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -237,6 +268,9 @@ def main():
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
+    
+    manager = Manager()
+    q = manager.Queue()
 
     if args.num_gpus > 1:
         mp.spawn(
@@ -251,11 +285,12 @@ def main():
                 args.batch_size,
                 args.s3,
                 args.dataset,
+                q,
             ),
             nprocs=args.num_gpus,
         )
     else:
-        process_chunk(0, 1, tokenizer_cfg_path, transform_cfg_path, paths, args.output_dir, args.num_workers, args.batch_size, args.s3, args.dataset)
+        process_chunk(0, 1, tokenizer_cfg_path, transform_cfg_path, paths, args.output_dir, args.num_workers, args.batch_size, args.s3, args.dataset, q)
 
     print(f"Processing {len(paths)} shards took {timer() - start} seconds")
 
