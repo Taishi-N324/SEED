@@ -166,7 +166,7 @@ def process_chunk(
     worker_paths = paths[rank::world_size]
     print (f"Rank: {rank} processing {len(worker_paths)} shards")
 
-    dataset = get_dataset(dataset_type, paths, s3)
+    dataset = get_dataset(dataset_type, worker_paths, s3)
 
     dataloader = torch.utils.data.DataLoader(
         dataset, #.batched(batch_size),
