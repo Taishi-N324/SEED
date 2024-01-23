@@ -18,7 +18,7 @@ echo START_SHARD=$START_SHARD
 END_SHARD="00499"
 echo END_SHARD=$END_SHARD
 
-PATHS="/p/fastdata/mmlaion/laion-400m/LAION-400m-webdataset/data/{$START_SHARD..$END_SHARD}.tar"
+PATHS="/p/fastdata/mmlaion/datacomp/datacomp_1B/flat/{$START_SHARD..$END_SHARD}.tar"
 echo PATHS=$PATHS
 
 OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_laion_400M/"
