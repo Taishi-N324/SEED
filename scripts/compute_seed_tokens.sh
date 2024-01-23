@@ -4,24 +4,24 @@
 #SBATCH --nodes=1
 #SBATCH --output=logs/out.%j
 #SBATCH --error=error_logs/err.%j
-#SBATCH --time=02:00:00
+#SBATCH --time=06:00:00
 #SBATCH --gres=gpu:4
-#SBATCH --partition=develbooster
+#SBATCH --partition=booster
 #SBATCH --cpus-per-task=96
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3 # ensures GPU_IDs are available with correct indicies
 
 # Args
-START_SHARD="00360"
+START_SHARD="0020001"
 echo START_SHARD=$START_SHARD
 
-END_SHARD="00499"
+END_SHARD="0021500"
 echo END_SHARD=$END_SHARD
 
-PATHS="/p/fastdata/mmlaion/laion-400m/LAION-400m-webdataset/data/{$START_SHARD..$END_SHARD}.tar"
+PATHS="/p/fastdata/mmlaion/datacomp/datacomp_1B/flat/{$START_SHARD..$END_SHARD}.tar"
 echo PATHS=$PATHS
 
-OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_laion_400M/"
+OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_datacomp1b_20_to_30/"
 echo OUTPUT_PATH=$OUTPUT_DIR
 
 NUM_WORKERS=48

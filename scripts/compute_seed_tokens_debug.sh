@@ -12,16 +12,16 @@
 export CUDA_VISIBLE_DEVICES=0,1,2,3 # ensures GPU_IDs are available with correct indicies
 
 # Args
-START_SHARD="00000" # For debugging
+START_SHARD="0020001" # For debugging
 echo START_SHARD=$START_SHARD
 
-END_SHARD="00004" # For debugging
+END_SHARD="0020008" # For debugging
 echo END_SHARD=$END_SHARD
 
-PATHS="/p/fastdata/mmlaion/laion-400m/LAION-400m-webdataset/data/{$START_SHARD..$END_SHARD}.tar"
+PATHS="/p/fastdata/mmlaion/datacomp/datacomp_1B/flat/{$START_SHARD..$END_SHARD}.tar"
 echo PATHS=$PATHS
 
-OUTPUT_DIR="/p/scratch/ccstdl/mhatre1/seed_tokens_laion_400M/" # For debugging
+OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_datacomp1b_20_to_30/"
 echo OUTPUT_PATH=$OUTPUT_DIR
 
 NUM_WORKERS=48
@@ -34,6 +34,8 @@ BATCH_SIZE=2048
 echo BATCH_SIZE=$BATCH_SIZE
 
 # Args
+module load Stages/2024 GCC/11.3.0  OpenMPI/4.1.4
+ml git
 
 source /p/project/ccstdl/gupta6/miniconda3/bin/activate
 conda activate seed
