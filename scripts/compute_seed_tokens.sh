@@ -12,16 +12,16 @@
 export CUDA_VISIBLE_DEVICES=0,1,2,3 # ensures GPU_IDs are available with correct indicies
 
 # Args
-START_SHARD="0029001"
+START_SHARD="0049001"
 echo START_SHARD=$START_SHARD
 
-END_SHARD="0030000"
+END_SHARD="0050000"
 echo END_SHARD=$END_SHARD
 
 PATHS="/p/fastdata/mmlaion/datacomp/datacomp_1B/flat/{$START_SHARD..$END_SHARD}.tar"
 echo PATHS=$PATHS
 
-OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_datacomp1b_20_to_30/"
+OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_datacomp1b_40_to_50/"
 echo OUTPUT_PATH=$OUTPUT_DIR
 
 NUM_WORKERS=8
