@@ -22,7 +22,7 @@ from timeit import default_timer as timer
 warnings.filterwarnings("ignore", category=UserWarning)
 pyrootutils.setup_root(__file__, indicator='.project-root', pythonpath=True)
 
-ALLOWED_DATASETS = ["laion", "mmc4", "datacomp"]
+ALLOWED_DATASETS = ["laion", "mmc4", "datacomp", "wiki", "grit", "obelics"]
     
 EXPECTED_CHUNK_SIZE = 10000
 
@@ -34,7 +34,7 @@ from multiprocessing import Process, Queue, Manager
 from queue import Empty
 
 
-def transform_and_remove_keys(sample):
+def transform_and_remove_keys_datacomp(sample):
     image, metadata, key, url = sample
 
     # CLIP transform without resizing
@@ -45,6 +45,17 @@ def transform_and_remove_keys(sample):
     new_dictionary['key'] = metadata['key']
     new_dictionary['caption'] = metadata['caption']
     new_dictionary['uid'] = metadata['uid']
+    new_dictionary['path'] = url
+    return image, new_dictionary, key
+
+def transform_and_remove_keys_wiki(sample):
+    image, metadata, key, url = sample
+
+    # CLIP transform without resizing
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    new_dictionary = {}
+    new_dictionary['key'] = metadata['key']
     new_dictionary['path'] = url
     return image, new_dictionary, key
 
@@ -81,7 +92,16 @@ def get_dataset(dataset_type, path, s3):
             .decode(wds.imagehandler("torchrgb"))
             .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
         )
-        dataset = dataset.map(transform_and_remove_keys)
+        dataset = dataset.map(transform_and_remove_keys_datacomp)
+
+        return dataset
+    elif dataset_type == "wiki":
+        dataset = (
+            wds.WebDataset(path)
+            .decode(wds.imagehandler("torchrgb"))
+            .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
+        )
+        dataset = dataset.map(transform_and_remove_keys_wiki)
 
         return dataset
     elif dataset_type == "mmc4":
@@ -297,3 +317,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# python seed_tokens.py -p "/p/scratch/ccstdl/nakamura2/en_wiki_img2dataset/{00000..00013}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_wiki_seed -nw 4 -ng 4 -bs 2048 --dataset wiki
+
+# python seed_tokens.py -p "/p/fastdata/mmlaion/obelics_img/obelics-train-00000-of-01335/{00000..00020}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_obelics_seed -nw 4 -ng 4 -bs 2048 --dataset wiki
