@@ -98,7 +98,7 @@ def get_dataset(dataset_type, path, s3):
     elif dataset_type == "wiki":
         dataset = (
             wds.WebDataset(path)
-            .decode(wds.imagehandler("torchrgb"))
+            .decode(wds.imagehandler("torchrgb"), handler=wds.ignore_and_continue)
             .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
         )
         dataset = dataset.map(transform_and_remove_keys_wiki)
