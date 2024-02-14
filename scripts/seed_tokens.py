@@ -44,7 +44,7 @@ def transform_and_remove_keys_datacomp(sample):
     new_dictionary = {}
     new_dictionary['key'] = metadata['key']
     new_dictionary['caption'] = metadata['caption']
-    new_dictionary['uid'] = metadata['uid']
+    # new_dictionary['uid'] = metadata['uid']
     new_dictionary['path'] = url
     return image, new_dictionary, key
 
@@ -127,6 +127,7 @@ def get_dataset(dataset_type, path, s3):
 def writer_worker(q, output_dir):
     
     while True:
+        print("asdfafadfa")
         try:
             sample = q.get(timeout=100) 
 
