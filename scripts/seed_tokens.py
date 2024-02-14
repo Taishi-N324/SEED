@@ -127,7 +127,6 @@ def get_dataset(dataset_type, path, s3):
 def writer_worker(q, output_dir):
     
     while True:
-        print("asdfafadfa")
         try:
             sample = q.get(timeout=100) 
 
