@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --output=logs/out.%j
 #SBATCH --error=error_logs/err.%j
-#SBATCH --time=02:00:00
+#SBATCH --time=01:15:00
 #SBATCH --gres=gpu:4
 #SBATCH --partition=booster
 #SBATCH --cpus-per-task=96
@@ -21,7 +21,7 @@ echo END_SHARD=$END_SHARD
 PATHS="/p/scratch/ccstdl/nakamura2/en_wiki_img2dataset/{$START_SHARD..$END_SHARD}.tar"
 echo PATHS=$PATHS
 
-OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_en_wiki_img2dataset/"
+OUTPUT_DIR="/p/fastdata/mmlaion/seed_tokens_en_wiki_img2dataset_siddhesh/"
 echo OUTPUT_PATH=$OUTPUT_DIR
 
 NUM_WORKERS=8
