@@ -45,7 +45,25 @@ def transform_and_remove_keys_datacomp(sample):
     new_dictionary['key'] = metadata['key']
     new_dictionary['caption'] = metadata['caption']
     new_dictionary['uid'] = metadata['uid']
-    new_dictionary['path'] = url
+    basename = os.path.basename(url)
+    new_dictionary['path'] = os.path.splitext(basename)[0]
+    return image, new_dictionary, key
+
+def transform_and_remove_keys_obelics(sample):
+    image, metadata, key, url = sample
+
+    # CLIP transform without resizing
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    
+    new_dictionary = {}
+    new_dictionary['key'] = metadata['key']
+    # new_dictionary['caption'] = metadata['caption']
+    # new_dictionary['uid'] = metadata['uid']
+    dir_path = os.path.dirname(url)
+    basename = os.path.basename(url)
+    result = os.path.join(os.path.basename(dir_path), os.path.splitext(basename)[0])
+    new_dictionary['path'] = result
     return image, new_dictionary, key
 
 def transform_and_remove_keys_wiki(sample):
@@ -56,7 +74,8 @@ def transform_and_remove_keys_wiki(sample):
     image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
     new_dictionary = {}
     new_dictionary['key'] = metadata['key']
-    new_dictionary['path'] = url
+    basename = os.path.basename(url)
+    new_dictionary['path'] = os.path.splitext(basename)[0]
     return image, new_dictionary, key
 
 def remove_keys(sample):
@@ -104,6 +123,15 @@ def get_dataset(dataset_type, path, s3):
         dataset = dataset.map(transform_and_remove_keys_wiki)
 
         return dataset
+    elif dataset_type == "obelics":
+        dataset = (
+            wds.WebDataset(path)
+            .decode(wds.imagehandler("torchrgb"))
+            .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
+        )
+        dataset = dataset.map(transform_and_remove_keys_obelics)
+
+        return dataset
     elif dataset_type == "mmc4":
 
         def resize_image(sample):
@@ -139,9 +167,8 @@ def writer_worker(q, output_dir):
             
             grouped = df.groupby("path")
             for path, group in grouped:
-                basename = os.path.basename(path)
                 output_path = os.path.join(
-                    output_dir, os.path.splitext(basename)[0] + ".parquet"
+                    output_dir, path + ".parquet"
                 )
                 # Remove the path column as it's no longer needed
                 group = group.drop(columns=["path"])
@@ -277,7 +304,43 @@ def main():
     tokenizer_cfg_path = '../configs/tokenizer/seed_llama_tokenizer_hf.yaml'
     transform_cfg_path = '../configs/transform/clip_transform.yaml'
 
-    paths = list(braceexpand.braceexpand(args.paths))
+    if args.dataset == "obelics":
+        # Get list of all paths 
+        import glob
+        import os
+        import re
+        s = args.paths
+
+        # find the range inside { } in the string `s`
+        m = re.findall('\{(\d+)\.\.(\d+)\}', s)
+
+        # check if m is not empty
+        if m:
+            # get start and end from the first match
+            start, end = map(int, m[0])
+        else:
+            raise Exception("No range found in the string.")
+
+        # set the base path
+        base_path = s.split("{")[0]
+
+        # initialize an empty list to store all .parquet files
+        all_files = []
+
+        # iterate over the range
+        for i in range(start, end+1):
+            # construct the folder path with padded zero
+            folder = f"{base_path}{str(i).zfill(5)}-of-01335"
+            
+            # get list of .parquet files in the folder
+            # and add to the overall list
+            all_files += glob.glob(os.path.join(folder, "*.tar"))
+
+        # Now, all_files contains paths to all .parquet files in each folder from start to end
+
+        paths = all_files
+    else:
+        paths = list(braceexpand.braceexpand(args.paths))
 
     start = timer()
 
@@ -322,3 +385,5 @@ if __name__ == "__main__":
 # python seed_tokens.py -p "/p/scratch/ccstdl/nakamura2/en_wiki_img2dataset/{00000..00013}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_wiki_seed -nw 4 -ng 4 -bs 2048 --dataset wiki
 
 # python seed_tokens.py -p "/p/fastdata/mmlaion/obelics_img/obelics-train-00000-of-01335/{00000..00020}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_obelics_seed -nw 4 -ng 4 -bs 2048 --dataset wiki
+
+# python seed_tokens.py -p "/p/fastdata/mmlaion/obelics_img/obelics-train-{00000..00020}-of-01335" -o /p/fastdata/mmlaion/hummingbird/temp_obelics_seed -nw 4 -ng 4 -bs 2048 --dataset obelics
