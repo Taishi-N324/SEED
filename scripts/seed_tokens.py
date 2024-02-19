@@ -174,7 +174,14 @@ def writer_worker(q, output_dir):
                 group = group.drop(columns=["path"])
                 # df.drop(columns=["embeddings"], inplace=True)
                 # df["seed_tokens"] = df["embeddings"].apply(lambda x: x.tobytes())
-                
+
+                directory = os.path.dirname(output_path)
+
+                #Check if directory exists
+                if not os.path.exists(directory):
+                    #If not exists then create it
+                    os.makedirs(directory)
+
                 # Check if parquet file exists and append or write accordingly
                 if os.path.exists(output_path):
                     # Read existing parquet file into a dataframe to append new data
