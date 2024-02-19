@@ -22,21 +22,75 @@ from timeit import default_timer as timer
 warnings.filterwarnings("ignore", category=UserWarning)
 pyrootutils.setup_root(__file__, indicator='.project-root', pythonpath=True)
 
-ALLOWED_DATASETS = ["laion", "mmc4"]
-
+ALLOWED_DATASETS = ["laion", "mmc4", "datacomp", "wiki", "grit", "obelics"]
+    
 EXPECTED_CHUNK_SIZE = 10000
 
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+from torchvision import transforms
+from multiprocessing import Process, Queue, Manager
+from queue import Empty
+
+
+def transform_and_remove_keys_datacomp(sample):
+    image, metadata, key, url = sample
+
+    # CLIP transform without resizing
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    
+    new_dictionary = {}
+    new_dictionary['key'] = metadata['key']
+    new_dictionary['caption'] = metadata['caption']
+    new_dictionary['uid'] = metadata['uid']
+    basename = os.path.basename(url)
+    new_dictionary['path'] = os.path.splitext(basename)[0]
+    return image, new_dictionary, key
+
+def transform_and_remove_keys_obelics(sample):
+    image, metadata, key, url = sample
+
+    # CLIP transform without resizing
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    
+    new_dictionary = {}
+    new_dictionary['key'] = metadata['key']
+    # new_dictionary['caption'] = metadata['caption']
+    # new_dictionary['uid'] = metadata['uid']
+    dir_path = os.path.dirname(url)
+    basename = os.path.basename(url)
+    result = os.path.join(os.path.basename(dir_path), os.path.splitext(basename)[0])
+    new_dictionary['path'] = result
+    return image, new_dictionary, key
+
+def transform_and_remove_keys_wiki(sample):
+    image, metadata, key, url = sample
+
+    # CLIP transform without resizing
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    new_dictionary = {}
+    new_dictionary['key'] = metadata['key']
+    basename = os.path.basename(url)
+    new_dictionary['path'] = os.path.splitext(basename)[0]
+    return image, new_dictionary, key
 
 def remove_keys(sample):
-    image, metadata = sample
+    image, metadata, key = sample
     new_metadata = {}
+
+    image = transforms.functional.resize(image, (224, 224))
+    image = transforms.functional.normalize(image, mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
 
     keys_to_keep = ['caption', 'similarity']
 
     for k, v in metadata.items():
         if k in keys_to_keep:
             new_metadata[k] = v
-    return image, new_metadata
+    return image, new_metadata, key
 
 def get_dataset(dataset_type, path, s3):
     if s3:
@@ -49,6 +103,33 @@ def get_dataset(dataset_type, path, s3):
             .to_tuple("jpg", "json")
         )
         dataset = dataset.map(remove_keys)
+
+        return dataset
+    elif dataset_type == "datacomp":
+        dataset = (
+            wds.WebDataset(path)
+            .decode(wds.imagehandler("torchrgb"))
+            .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
+        )
+        dataset = dataset.map(transform_and_remove_keys_datacomp)
+
+        return dataset
+    elif dataset_type == "wiki":
+        dataset = (
+            wds.WebDataset(path)
+            .decode(wds.imagehandler("torchrgb"), handler=wds.ignore_and_continue)
+            .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
+        )
+        dataset = dataset.map(transform_and_remove_keys_wiki)
+
+        return dataset
+    elif dataset_type == "obelics":
+        dataset = (
+            wds.WebDataset(path)
+            .decode(wds.imagehandler("torchrgb"), handler=wds.ignore_and_continue)
+            .to_tuple("jpg;png;webp", "json", "__key__", "__url__")
+        )
+        dataset = dataset.map(transform_and_remove_keys_obelics)
 
         return dataset
     elif dataset_type == "mmc4":
@@ -71,6 +152,43 @@ def get_dataset(dataset_type, path, s3):
         return dataset
 
 
+def writer_worker(q, output_dir):
+    
+    while True:
+        try:
+            sample = q.get(timeout=100) 
+
+            if sample is None:  # None is the signal to stop.
+                break
+            rows, embeddings = sample
+            df = pd.DataFrame(rows)
+            embeddings_cpu = embeddings.reshape(len(df), -1)
+            df["seed_tokens"] = [item.tobytes() for item in embeddings_cpu]
+            
+            grouped = df.groupby("path")
+            for path, group in grouped:
+                output_path = os.path.join(
+                    output_dir, path + ".parquet"
+                )
+                # Remove the path column as it's no longer needed
+                group = group.drop(columns=["path"])
+                # df.drop(columns=["embeddings"], inplace=True)
+                # df["seed_tokens"] = df["embeddings"].apply(lambda x: x.tobytes())
+                
+                # Check if parquet file exists and append or write accordingly
+                if os.path.exists(output_path):
+                    # Read existing parquet file into a dataframe to append new data
+                    existing_df = pd.read_parquet(output_path)
+                    updated_df = pd.concat([existing_df, group])
+                    # Write/overwrite the parquet file with the updated dataframe
+                    updated_df.to_parquet(output_path, index=False)
+                else:
+                    # Write the new dataframe to a parquet file directly
+                    group.to_parquet(output_path, index=False)
+
+        except Empty:
+            continue
+
 def process_chunk(
     rank,
     world_size,
@@ -82,66 +200,55 @@ def process_chunk(
     batch_size,
     s3,
     dataset_type,
+    q,
 ):
     tokenizer_cfg = OmegaConf.load(tokenizer_cfg_path)
     tokenizer = hydra.utils.instantiate(tokenizer_cfg, device=rank, load_diffusion=False)
 
-    transform_cfg = OmegaConf.load(transform_cfg_path)
-    transform = hydra.utils.instantiate(transform_cfg)
-
-    num_paths_per_chunk = int(np.ceil(len(paths) / world_size))
-
-    worker_paths = paths[
-        rank * num_paths_per_chunk : min(len(paths), (rank + 1) * num_paths_per_chunk)
-    ]
+    # num_paths_per_chunk = int(np.ceil(len(paths) / world_size))
+    # python seed_tokens.py -p "/p/fastdata/mmlaion/datacomp/datacomp_1B/flat/{0000000..0000007}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_seed -nw 32 -ng 4 -bs 2048
+    # worker_paths = paths[
+    #     rank * num_paths_per_chunk : min(len(paths), (rank + 1) * num_paths_per_chunk)
+    # ]
+    worker_paths = paths[rank::world_size]
     print (f"Rank: {rank} processing {len(worker_paths)} shards")
-    for path in worker_paths:
-        basename = os.path.basename(path)
-        output_path = os.path.join(
-            output_dir, os.path.splitext(basename)[0] + ".parquet"
-        )
 
-        try:
-            dataset = get_dataset(dataset_type, path, s3)
-            dataloader = torch.utils.data.DataLoader(
-                dataset, #.batched(batch_size),
-                batch_size=batch_size,
-                pin_memory=True,
-                num_workers=num_workers,
-            )
-            rows = {}
-            embeddings = []
-            for data, metas in tqdm(
+    dataset = get_dataset(dataset_type, worker_paths, s3)
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset, #.batched(batch_size),
+        batch_size=batch_size,
+        pin_memory=True,
+        num_workers=num_workers,
+    )
+
+    rows = {}
+    writer_p = Process(target=writer_worker, args=(q, output_dir))
+    writer_p.start()
+
+    num_chunks = len(worker_paths)
+
+
+    for data, metas, key_ in tqdm(
                 dataloader,
-                total=int(np.ceil(EXPECTED_CHUNK_SIZE / batch_size)),
-                desc=f"Rank : {rank}, Shard: {basename}",
+                total=int(np.ceil(EXPECTED_CHUNK_SIZE * num_chunks / batch_size)),
+                desc=f"Rank : {rank}",
                 position=rank,
                 leave=False,
             ):
-                image_tensor = transform(data).to(rank)
-                image_ids = tokenizer.encode_image(image_torch=image_tensor)
+        image_tensor = data.to(rank)
+        image_ids = tokenizer.encode_image(image_torch=image_tensor).cpu().numpy()
 
-                if len(rows.keys()) == 0:
-                    for k, v in metas.items():
-                        if type(v) == torch.Tensor:
-                            v = v.cpu().numpy().tolist()
-                        rows[k] = v
-                else:
-                    for k, v in metas.items():
-                        if type(v) == torch.Tensor:
-                            v = v.cpu().numpy().tolist()
-                        rows[k].extend(v)
-                embeddings.append(image_ids)
-            embeddings = torch.cat(embeddings, axis=0)
+        for k, v in metas.items():
+            if type(v) == torch.Tensor:
+                v = v.cpu().numpy().tolist()
+            rows[k] = v
+        rows["__key__"] = key_
+        q.put((rows, image_ids))
+        rows = {}
 
-            df = pd.DataFrame(rows)
-            embeddings_cpu = embeddings.cpu().numpy().reshape(len(df), -1)
-            df["code"] = [item.tobytes() for item in embeddings_cpu]
-            df.to_parquet(output_path, compression="brotli")
-        except Exception:
-            print(f"[-] Failed to process {basename}:", file=sys.stderr)
-            traceback.print_exc()
-
+    q.put(None)  # signal for the writer worker to stop
+    writer_p.join()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -186,7 +293,7 @@ def main():
         "-ds",
         "--dataset",
         type=str,
-        default="laion",
+        default="datacomp",
         help="Type of dataset used. Can be 'laion' or 'mmc4'",
     )
     args = parser.parse_args()
@@ -197,7 +304,43 @@ def main():
     tokenizer_cfg_path = '../configs/tokenizer/seed_llama_tokenizer_hf.yaml'
     transform_cfg_path = '../configs/transform/clip_transform.yaml'
 
-    paths = list(braceexpand.braceexpand(args.paths))
+    if args.dataset == "obelics":
+        # Get list of all paths 
+        import glob
+        import os
+        import re
+        s = args.paths
+
+        # find the range inside { } in the string `s`
+        m = re.findall('\{(\d+)\.\.(\d+)\}', s)
+
+        # check if m is not empty
+        if m:
+            # get start and end from the first match
+            start, end = map(int, m[0])
+        else:
+            raise Exception("No range found in the string.")
+
+        # set the base path
+        base_path = s.split("{")[0]
+
+        # initialize an empty list to store all .parquet files
+        all_files = []
+
+        # iterate over the range
+        for i in range(start, end+1):
+            # construct the folder path with padded zero
+            folder = f"{base_path}{str(i).zfill(5)}-of-01335"
+            
+            # get list of .parquet files in the folder
+            # and add to the overall list
+            all_files += glob.glob(os.path.join(folder, "*.tar"))
+
+        # Now, all_files contains paths to all .parquet files in each folder from start to end
+
+        paths = all_files
+    else:
+        paths = list(braceexpand.braceexpand(args.paths))
 
     start = timer()
 
@@ -208,6 +351,9 @@ def main():
 
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
+    
+    manager = Manager()
+    q = manager.Queue()
 
     if args.num_gpus > 1:
         mp.spawn(
@@ -222,14 +368,22 @@ def main():
                 args.batch_size,
                 args.s3,
                 args.dataset,
+                q,
             ),
             nprocs=args.num_gpus,
         )
     else:
-        process_chunk(0, 1, tokenizer_cfg_path, transform_cfg_path, paths, args.output_dir, args.num_workers, args.batch_size, args.s3, args.dataset)
+        process_chunk(0, 1, tokenizer_cfg_path, transform_cfg_path, paths, args.output_dir, args.num_workers, args.batch_size, args.s3, args.dataset, q)
 
     print(f"Processing {len(paths)} shards took {timer() - start} seconds")
 
 
 if __name__ == "__main__":
     main()
+
+
+# python seed_tokens.py -p "/p/scratch/ccstdl/nakamura2/en_wiki_img2dataset/{00000..00013}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_wiki_seed -nw 4 -ng 4 -bs 2048 --dataset wiki
+
+# python seed_tokens.py -p "/p/fastdata/mmlaion/obelics_img/obelics-train-00000-of-01335/{00000..00020}.tar" -o /p/fastdata/mmlaion/hummingbird/temp_obelics_seed -nw 4 -ng 4 -bs 2048 --dataset wiki
+
+# python seed_tokens.py -p "/p/fastdata/mmlaion/obelics_img/obelics-train-{00000..00020}-of-01335" -o /p/fastdata/mmlaion/hummingbird/temp_obelics_seed -nw 4 -ng 4 -bs 2048 --dataset obelics
