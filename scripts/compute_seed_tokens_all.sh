@@ -1,4 +1,4 @@
-#!/bin/bash
+!/bin/bash
 
 start=0
 end=20
@@ -12,7 +12,7 @@ do
     sbatch scripts/compute_seed_tokens_grit_1gpu.sh $padded_start $padded_end grit-train-$padded_file_index-of-00021
 done
 
-for i in {1..2}
+for i in {3..4}
 do
     start=$((i * 20 + 1))
     end=$((start + 19))
